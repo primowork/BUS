@@ -9,8 +9,8 @@ const PORT = process.env.PORT || 3000;
 const STOP_CODE = 21831;
 const LINE_NUMBER = '2';
 
-// Serve static files
-app.use(express.static('public'));
+// Serve static files from root directory
+app.use(express.static(__dirname));
 
 // API endpoint למשיכת זמני הגעה
 app.get('/api/arrivals', async (req, res) => {
@@ -57,28 +57,12 @@ app.get('/api/arrivals', async (req, res) => {
     } catch (error) {
         console.error('Error fetching arrivals:', error);
         
-        // Fallback - ננסה API אחר
-        try {
-            const fallbackResponse = await fetch(
-                `https://open-bus-stride-api.hasadna.org.il/gtfs_stops/list?stop_code=${STOP_CODE}`
-            );
-            const stopData = await fallbackResponse.json();
-            
-            res.json({
-                success: false,
-                error: error.message,
-                stopInfo: stopData,
-                arrivals: [],
-                timestamp: new Date().toISOString()
-            });
-        } catch (fallbackError) {
-            res.json({
-                success: false,
-                error: error.message,
-                arrivals: [],
-                timestamp: new Date().toISOString()
-            });
-        }
+        res.json({
+            success: false,
+            error: error.message,
+            arrivals: [],
+            timestamp: new Date().toISOString()
+        });
     }
 });
 
@@ -89,7 +73,7 @@ app.get('/api/health', (req, res) => {
 
 // Serve the main page
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 app.listen(PORT, () => {
