@@ -3,7 +3,7 @@ const fetch = require('node-fetch');
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 // הגדרות
 const STOP_CODE = 21831;
@@ -76,7 +76,7 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚌 Bus Display server running on port ${PORT}`);
     console.log(`📍 Monitoring stop ${STOP_CODE} for line ${LINE_NUMBER}`);
 });
