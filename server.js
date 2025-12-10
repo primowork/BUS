@@ -1,12 +1,27 @@
+const express = require('express');
+const fetch = require('node-fetch');
+const path = require('path');
+
+const app = express();  // <-- זה החלק שהיה חסר לך!
+const PORT = process.env.PORT || 8080;
+
+// הגדרות
+const STOP_CODE = 21831;
+const LINE_REF = 547;  // קו 2 של אגד - line_ref האמיתי הוא 547
+
+// Serve static files (כדי שה-index.html ייטען)
+app.use(express.static(__dirname));
+
+// API endpoint לזמני הגעה
 app.get('/api/arrivals', async (req, res) => {
     try {
         const now = new Date();
 
-        // אנדפוינט מומלץ לזמני הגעה משוערים
+        // שימוש באנדפוינט המומלץ עם ETA אמיתי
         const response = await fetch(
             `https://open-bus-stride-api.hasadna.org.il/route_timetable/list?` +
             `stop_code=${STOP_CODE}&` +
-            `line_ref=547&` +  // קו 2 = 547
+            `line_ref=${LINE_REF}&` +
             `limit=15`
         );
 
@@ -22,7 +37,7 @@ app.get('/api/arrivals', async (req, res) => {
         for (const item of data) {
             let arrivalTime;
 
-            // עדיפות ל-ETA אמיתי
+            // עדיפות ל-ETA אמיתי (זמן אמת)
             if (item.eta) {
                 arrivalTime = new Date(item.eta);
             } else if (item.arrival_time) {
@@ -56,7 +71,7 @@ app.get('/api/arrivals', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Error:', error.message);
+        console.error('Error fetching arrivals:', error.message);
         res.json({
             success: false,
             error: error.message,
@@ -64,4 +79,20 @@ app.get('/api/arrivals', async (req, res) => {
             timestamp: new Date().toISOString()
         });
     }
+});
+
+// בדיקת בריאות
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', stopCode: STOP_CODE, lineNumber: '2' });
+});
+
+// דף ראשי
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+// הפעלת השרת
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚌 Bus Display server running on port ${PORT}`);
+    console.log(`📍 Monitoring stop ${STOP_CODE} for line 2 (line_ref ${LINE_REF})`);
 });
