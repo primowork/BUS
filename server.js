@@ -1,6 +1,5 @@
 const express = require('express');
 const fetch = require('node-fetch');
-const cheerio = require('cheerio');  // לפרסינג HTML
 const path = require('path');
 
 const app = express();
@@ -9,40 +8,46 @@ const PORT = process.env.PORT || 8080;
 // הגדרות
 const STOP_CODE = 21831;
 const LINE_NUMBER = '2';
-const CURLBUS_URL = 'https://curlbus.app';
+const CURLBUS_URL = `https://curlbus.app/${STOP_CODE}`;
 
 // Serve static files
 app.use(express.static(__dirname));
 
-// API endpoint – פרסינג HTML מ-curlbus
+// API endpoint – פרסינג טקסט מ-curlbus
 app.get('/api/arrivals', async (req, res) => {
     try {
         const now = new Date();
 
-        // שליפה מ-HTML של curlbus
-        const response = await fetch(`${CURLBUS_URL}/${STOP_CODE}`);
+        // שליפה מ-curlbus (טקסט פשוט)
+        const response = await fetch(CURLBUS_URL);
         if (!response.ok) {
             throw new Error(`Curlbus returned ${response.status}`);
         }
 
-        const html = await response.text();
-        const $ = cheerio.load(html);
+        const text = await response.text();
+        const lines = text.split('\n');
         const arrivals = [];
 
-        // פרסינג טבלה – חפש שורות עם route=2
-        $('tr').each((i, elem) => {
-            const route = $(elem).find('.route').text().trim();  // התאם לסלקטורים אם צריך
-            if (route === LINE_NUMBER) {
-                const timesText = $(elem).find('.time').text().trim();  // טקסט כמו "2m, 18m"
-                const times = timesText.split(',').map(t => t.trim().replace('m', ''));  // חלץ מספרים
-                times.forEach(timeStr => {
-                    const minutes = parseInt(timeStr);
-                    if (!isNaN(minutes) && minutes >= -2 && minutes < 120) {
-                        arrivals.push(Math.max(0, minutes));
+        let foundLine2 = false;
+        for (const line of lines) {
+            if (line.includes(` ${LINE_NUMBER} `) || line.includes(`│ ${LINE_NUMBER} │`) || line.includes(`│ ${LINE_NUMBER} `)) {
+                foundLine2 = true;
+                // חפש את עמודת הזמנים (האחרונה)
+                const columns = line.split('│');
+                if (columns.length > 3) {
+                    const timesStr = columns[columns.length - 1].trim();
+                    if (timesStr && timesStr !== '' && !timesStr.includes('Line')) {
+                        const times = timesStr.split(',').map(t => t.trim().replace('m', '').replace('Now', '0'));
+                        times.forEach(t => {
+                            const minutes = parseInt(t);
+                            if (!isNaN(minutes) && minutes >= -2 && minutes < 120) {
+                                arrivals.push(Math.max(0, minutes));
+                            }
+                        });
                     }
-                });
+                }
             }
-        });
+        }
 
         arrivals.sort((a, b) => a - b);
         const topArrivals = [...new Set(arrivals)].slice(0, 3);
@@ -55,25 +60,18 @@ app.get('/api/arrivals', async (req, res) => {
             lineNumber: LINE_NUMBER,
             arrivals: topArrivals,
             timestamp: now.toISOString(),
-            source: 'curlbus_html'
+            source: 'curlbus_text'
         });
 
     } catch (error) {
         console.error('Curlbus error:', error.message);
 
-        // Fallback ל-Stride (הקוד הישן – העתק את הלולאה מ-server.js קודם)
-        try {
-            // קוד Stride כאן (כמו בהודעה קודמת)
-            // ...
-            res.json({ /* arrivals מ-Stride */ });
-        } catch (fallbackError) {
-            res.json({
-                success: false,
-                error: 'No data available',
-                arrivals: [],
-                timestamp: new Date().toISOString()
-            });
-        }
+        // Fallback ל-Stride אם צריך
+        res.json({
+            success: false,
+            arrivals: [],
+            timestamp: new Date().toISOString()
+        });
     }
 });
 
@@ -87,6 +85,6 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚌 Bus Display server running on port ${PORT} with curlbus HTML parsing`);
+    console.log(`🚌 Bus Display server running on port ${PORT} with curlbus text parsing`);
     console.log(`📍 Monitoring stop ${STOP_CODE} for line ${LINE_NUMBER}`);
 });
