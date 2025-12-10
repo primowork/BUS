@@ -12,102 +12,51 @@ const LINE_NUMBER = '2';
 // Serve static files from root directory
 app.use(express.static(__dirname));
 
-// API endpoint למשיכת זמני הגעה - משתמש ב-curlbus.app
+// API endpoint למשיכת זמני הגעה
 app.get('/api/arrivals', async (req, res) => {
     try {
-        // קריאה ל-curlbus.app API עם header של JSON
+        // שימוש ב-Open Bus Stride API - siri_vehicle_locations לזמן אמת
+        const now = new Date();
+        const thirtyMinutesAgo = new Date(now.getTime() - 30 * 60 * 1000);
+        
+        // קריאה ל-API של Open Bus Stride - חיפוש נסיעות פעילות
         const response = await fetch(
-            `https://curlbus.app/${STOP_CODE}`,
-            {
-                headers: {
-                    'Accept': 'application/json',
-                    'User-Agent': 'BusDisplay/1.0'
-                }
-            }
+            `https://open-bus-stride-api.hasadna.org.il/siri_ride_stops/list?` + 
+            `siri_stop__code=${STOP_CODE}&` +
+            `siri_ride__siri_route__line_ref=${LINE_NUMBER}&` +
+            `order_by=order&` +
+            `limit=10`
         );
         
         if (!response.ok) {
-            throw new Error(`curlbus API returned ${response.status}`);
+            throw new Error(`API returned ${response.status}`);
         }
         
         const data = await response.json();
         const arrivals = [];
         
-        console.log('Raw curlbus response keys:', Object.keys(data));
+        console.log(`Got ${data.length} results from API`);
         
-        // curlbus יכול להחזיר את הנתונים בכמה מבנים שונים
-        // ננסה למצוא את הנתונים
-        
-        let visits = [];
-        
-        // אפשרות 1: data.visits[stopCode]
-        if (data.visits) {
-            visits = data.visits[STOP_CODE] || data.visits[String(STOP_CODE)] || [];
-        }
-        
-        // אפשרות 2: data ישירות הוא מערך
-        if (Array.isArray(data)) {
-            visits = data;
-        }
-        
-        // אפשרות 3: data.arrivals
-        if (data.arrivals) {
-            visits = data.arrivals;
-        }
-        
-        // אפשרות 4: data.stop והנתונים בתוכו
-        if (data.stop && data.stop.visits) {
-            visits = data.stop.visits;
-        }
-        
-        console.log(`Found ${visits.length} total visits`);
-        
-        for (const visit of visits) {
-            // בדיקת שם הקו - curlbus משתמש בשדות שונים
-            const lineNum = String(visit.line_name || visit.route_short_name || visit.line || visit.route || '');
-            
-            console.log(`Checking line: "${lineNum}" vs "${LINE_NUMBER}"`);
-            
-            // בודק התאמה (קו 2 יכול להיות "2" או 2)
-            if (lineNum === LINE_NUMBER || lineNum === `קו ${LINE_NUMBER}` || String(lineNum).trim() === LINE_NUMBER) {
+        for (const item of data) {
+            // חישוב זמן הגעה משוער
+            if (item.gtfs_stop__arrival_time || item.scheduled_arrival_time) {
+                const scheduledTime = item.gtfs_stop__arrival_time || item.scheduled_arrival_time;
+                // המרה לדקות מעכשיו
+                const [hours, minutes] = scheduledTime.split(':').map(Number);
+                const scheduledDate = new Date();
+                scheduledDate.setHours(hours, minutes, 0, 0);
                 
-                // חישוב דקות - curlbus יכול להחזיר בכמה פורמטים
-                let minutes = null;
+                const diffMinutes = Math.round((scheduledDate - now) / 60000);
                 
-                // eta בשניות
-                if (typeof visit.eta === 'number') {
-                    minutes = Math.round(visit.eta / 60);
-                }
-                // eta כמחרוזת עם 'm' (כמו "10m")
-                else if (typeof visit.eta === 'string') {
-                    const match = visit.eta.match(/(\d+)/);
-                    if (match) {
-                        minutes = parseInt(match[1]);
-                    }
-                    if (visit.eta.toLowerCase() === 'now') {
-                        minutes = 0;
-                    }
-                }
-                // minutes ישירות
-                else if (typeof visit.minutes === 'number') {
-                    minutes = visit.minutes;
-                }
-                // static_eta
-                else if (typeof visit.static_eta === 'number') {
-                    minutes = Math.round(visit.static_eta / 60);
-                }
-                
-                console.log(`Line ${lineNum}: ${minutes} minutes`);
-                
-                if (minutes !== null && minutes >= 0 && minutes < 120) {
-                    arrivals.push(minutes);
+                if (diffMinutes >= -2 && diffMinutes < 120) {
+                    arrivals.push(Math.max(0, diffMinutes));
                 }
             }
         }
         
         // מיון ולקיחת 3 הראשונים
         arrivals.sort((a, b) => a - b);
-        const topArrivals = arrivals.slice(0, 3);
+        const topArrivals = [...new Set(arrivals)].slice(0, 3); // unique values
         
         console.log(`📍 Stop ${STOP_CODE}: Found ${topArrivals.length} arrivals for line ${LINE_NUMBER}:`, topArrivals);
         
@@ -116,41 +65,90 @@ app.get('/api/arrivals', async (req, res) => {
             stopCode: STOP_CODE,
             lineNumber: LINE_NUMBER,
             arrivals: topArrivals,
-            timestamp: new Date().toISOString(),
-            source: 'curlbus'
+            timestamp: now.toISOString()
         });
         
     } catch (error) {
         console.error('Error fetching arrivals:', error.message);
         
-        res.json({
-            success: false,
-            error: error.message,
-            arrivals: [],
-            timestamp: new Date().toISOString()
-        });
+        // Fallback - נסה את ה-GTFS timetable
+        try {
+            const fallbackArrivals = await getFallbackArrivals();
+            res.json({
+                success: fallbackArrivals.length > 0,
+                stopCode: STOP_CODE,
+                lineNumber: LINE_NUMBER,
+                arrivals: fallbackArrivals,
+                timestamp: new Date().toISOString(),
+                source: 'gtfs_fallback'
+            });
+        } catch (fallbackError) {
+            res.json({
+                success: false,
+                error: error.message,
+                arrivals: [],
+                timestamp: new Date().toISOString()
+            });
+        }
     }
 });
 
-// Debug endpoint - לראות את כל הנתונים הגולמיים מ-curlbus
+// פונקציית fallback - שימוש בלוח זמנים סטטי
+async function getFallbackArrivals() {
+    try {
+        const now = new Date();
+        const dayOfWeek = now.getDay(); // 0 = Sunday
+        
+        // קריאה ל-GTFS route timetable
+        const response = await fetch(
+            `https://open-bus-stride-api.hasadna.org.il/gtfs_stop_times/list?` +
+            `stop__code=${STOP_CODE}&` +
+            `trip__route__line_ref=${LINE_NUMBER}&` +
+            `limit=20`
+        );
+        
+        if (!response.ok) return [];
+        
+        const data = await response.json();
+        const arrivals = [];
+        
+        for (const item of data) {
+            if (item.arrival_time) {
+                const [hours, minutes] = item.arrival_time.split(':').map(Number);
+                const scheduledDate = new Date();
+                scheduledDate.setHours(hours, minutes, 0, 0);
+                
+                const diffMinutes = Math.round((scheduledDate - now) / 60000);
+                
+                if (diffMinutes >= 0 && diffMinutes < 120) {
+                    arrivals.push(diffMinutes);
+                }
+            }
+        }
+        
+        arrivals.sort((a, b) => a - b);
+        return [...new Set(arrivals)].slice(0, 3);
+    } catch (e) {
+        console.error('Fallback error:', e.message);
+        return [];
+    }
+}
+
+// Debug endpoint
 app.get('/api/debug', async (req, res) => {
     try {
         const response = await fetch(
-            `https://curlbus.app/${STOP_CODE}`,
-            {
-                headers: {
-                    'Accept': 'application/json',
-                    'User-Agent': 'BusDisplay/1.0'
-                }
-            }
+            `https://open-bus-stride-api.hasadna.org.il/siri_ride_stops/list?` + 
+            `siri_stop__code=${STOP_CODE}&` +
+            `limit=5`
         );
         
         const data = await response.json();
         res.json({
-            raw: data,
-            keys: Object.keys(data),
             stopCode: STOP_CODE,
-            lineNumber: LINE_NUMBER
+            lineNumber: LINE_NUMBER,
+            results: data,
+            count: data.length
         });
         
     } catch (error) {
@@ -171,5 +169,4 @@ app.get('/', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚌 Bus Display server running on port ${PORT}`);
     console.log(`📍 Monitoring stop ${STOP_CODE} for line ${LINE_NUMBER}`);
-    console.log(`🔗 Using curlbus.app API for real-time data`);
 });
