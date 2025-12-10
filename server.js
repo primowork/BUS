@@ -1,5 +1,6 @@
 const express = require('express');
 const fetch = require('node-fetch');
+const cheerio = require('cheerio');  // לפרסינג HTML
 const path = require('path');
 
 const app = express();
@@ -8,42 +9,40 @@ const PORT = process.env.PORT || 8080;
 // הגדרות
 const STOP_CODE = 21831;
 const LINE_NUMBER = '2';
-const CURLBUS_BASE = 'https://curlbus.app';  // hosted ציבורי!
+const CURLBUS_URL = 'https://curlbus.app';
 
 // Serve static files
 app.use(express.static(__dirname));
 
-// API endpoint – שליפה מ-curlbus.app
+// API endpoint – פרסינג HTML מ-curlbus
 app.get('/api/arrivals', async (req, res) => {
     try {
-        const now = new Date().getTime() / 1000;  // timestamp בשניות
+        const now = new Date();
 
-        // שליפה מתחנה 21831 (סנן לקו 2)
-        const response = await fetch(`${CURLBUS_BASE}/${STOP_CODE}`, {
-            headers: { 'Accept': 'application/json' }
-        });
-
+        // שליפה מ-HTML של curlbus
+        const response = await fetch(`${CURLBUS_URL}/${STOP_CODE}`);
         if (!response.ok) {
             throw new Error(`Curlbus returned ${response.status}`);
         }
 
-        const data = await response.json();
+        const html = await response.text();
+        const $ = cheerio.load(html);
         const arrivals = [];
 
-        // סנן לקו 2 וחשב דקות מ-ETA
-        if (data.arrivals && Array.isArray(data.arrivals)) {
-            data.arrivals
-                .filter(item => item.route === LINE_NUMBER)
-                .forEach(item => {
-                    const etaTimestamp = item.estimated_arrival;  // timestamp בשניות
-                    if (etaTimestamp) {
-                        const diffMinutes = Math.round((etaTimestamp - now) / 60);  // חישוב דקות
-                        if (diffMinutes >= -2 && diffMinutes < 120) {
-                            arrivals.push(Math.max(0, diffMinutes));
-                        }
+        // פרסינג טבלה – חפש שורות עם route=2
+        $('tr').each((i, elem) => {
+            const route = $(elem).find('.route').text().trim();  // התאם לסלקטורים אם צריך
+            if (route === LINE_NUMBER) {
+                const timesText = $(elem).find('.time').text().trim();  // טקסט כמו "2m, 18m"
+                const times = timesText.split(',').map(t => t.trim().replace('m', ''));  // חלץ מספרים
+                times.forEach(timeStr => {
+                    const minutes = parseInt(timeStr);
+                    if (!isNaN(minutes) && minutes >= -2 && minutes < 120) {
+                        arrivals.push(Math.max(0, minutes));
                     }
                 });
-        }
+            }
+        });
 
         arrivals.sort((a, b) => a - b);
         const topArrivals = [...new Set(arrivals)].slice(0, 3);
@@ -55,17 +54,18 @@ app.get('/api/arrivals', async (req, res) => {
             stopCode: STOP_CODE,
             lineNumber: LINE_NUMBER,
             arrivals: topArrivals,
-            timestamp: new Date().toISOString(),
-            source: 'curlbus_public'
+            timestamp: now.toISOString(),
+            source: 'curlbus_html'
         });
 
     } catch (error) {
         console.error('Curlbus error:', error.message);
 
-        // Fallback ל-Stride (הקוד הישן שלך – העתק את הלולאה מ-server.js הקודם)
+        // Fallback ל-Stride (הקוד הישן – העתק את הלולאה מ-server.js קודם)
         try {
-            // ... (קוד Stride כאן – כמו בהודעה קודמת)
-            res.json({ /* נתונים מ-Stride */ });
+            // קוד Stride כאן (כמו בהודעה קודמת)
+            // ...
+            res.json({ /* arrivals מ-Stride */ });
         } catch (fallbackError) {
             res.json({
                 success: false,
@@ -87,6 +87,6 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚌 Bus Display server running on port ${PORT} with curlbus public API`);
+    console.log(`🚌 Bus Display server running on port ${PORT} with curlbus HTML parsing`);
     console.log(`📍 Monitoring stop ${STOP_CODE} for line ${LINE_NUMBER}`);
 });
