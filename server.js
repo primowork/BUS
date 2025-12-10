@@ -12,32 +12,55 @@ const LINE_NUMBER = '2';
 // Serve static files from root directory
 app.use(express.static(__dirname));
 
-// API endpoint למשיכת זמני הגעה
+// API endpoint למשיכת זמני הגעה - משתמש ב-curlbus.app
 app.get('/api/arrivals', async (req, res) => {
     try {
-        // קריאה ל-SIRI API של משרד התחבורה דרך Open Bus Stride
+        // קריאה ל-curlbus.app API עם header של JSON
         const response = await fetch(
-            `https://open-bus-stride-api.hasadna.org.il/siri_rides/list?siri_route__line_refs=${LINE_NUMBER}&siri_stops__stop_ids=${STOP_CODE}&limit=20&order_by=siri_ride__scheduled_start_time`
+            `https://curlbus.app/${STOP_CODE}`,
+            {
+                headers: {
+                    'Accept': 'application/json',
+                    'User-Agent': 'BusDisplay/1.0'
+                },
+                timeout: 10000
+            }
         );
         
         if (!response.ok) {
-            throw new Error(`API returned ${response.status}`);
+            throw new Error(`curlbus API returned ${response.status}`);
         }
         
         const data = await response.json();
         
-        // מסנן ומחשב דקות להגעה
-        const now = new Date();
+        // מסנן רק את קו 2 ומחשב דקות להגעה
         const arrivals = [];
         
-        for (const ride of data) {
-            if (ride.siri_ride__scheduled_start_time) {
-                // מחשב זמן הגעה משוער
-                const scheduled = new Date(ride.siri_ride__scheduled_start_time);
-                const diffMinutes = Math.round((scheduled - now) / 60000);
+        // curlbus מחזיר את הנתונים בפורמט שונה
+        // בדיקה של המבנה שמוחזר
+        if (data.visits) {
+            // visits הוא אובייקט עם מפתחות של קודי תחנות
+            const stopVisits = data.visits[STOP_CODE] || data.visits[String(STOP_CODE)] || [];
+            
+            for (const visit of stopVisits) {
+                // בודק אם זה הקו שאנחנו רוצים
+                const lineName = visit.line_name || visit.route_short_name || visit.line_ref || '';
                 
-                if (diffMinutes >= 0 && diffMinutes < 120) {
-                    arrivals.push(diffMinutes);
+                if (lineName === LINE_NUMBER || lineName === `קו ${LINE_NUMBER}`) {
+                    // curlbus מחזיר eta בשניות
+                    let minutes = null;
+                    
+                    if (visit.eta !== undefined && visit.eta !== null) {
+                        minutes = Math.round(visit.eta / 60);
+                    } else if (visit.minutes !== undefined) {
+                        minutes = visit.minutes;
+                    } else if (visit.static_eta !== undefined) {
+                        minutes = Math.round(visit.static_eta / 60);
+                    }
+                    
+                    if (minutes !== null && minutes >= 0 && minutes < 120) {
+                        arrivals.push(minutes);
+                    }
                 }
             }
         }
@@ -46,16 +69,19 @@ app.get('/api/arrivals', async (req, res) => {
         arrivals.sort((a, b) => a - b);
         const topArrivals = arrivals.slice(0, 3);
         
+        console.log(`📍 Stop ${STOP_CODE}: Found ${topArrivals.length} arrivals for line ${LINE_NUMBER}`);
+        
         res.json({
             success: true,
             stopCode: STOP_CODE,
             lineNumber: LINE_NUMBER,
             arrivals: topArrivals,
-            timestamp: now.toISOString()
+            timestamp: new Date().toISOString(),
+            source: 'curlbus'
         });
         
     } catch (error) {
-        console.error('Error fetching arrivals:', error);
+        console.error('Error fetching arrivals:', error.message);
         
         res.json({
             success: false,
@@ -63,6 +89,27 @@ app.get('/api/arrivals', async (req, res) => {
             arrivals: [],
             timestamp: new Date().toISOString()
         });
+    }
+});
+
+// Debug endpoint - לראות את כל הנתונים מ-curlbus
+app.get('/api/debug', async (req, res) => {
+    try {
+        const response = await fetch(
+            `https://curlbus.app/${STOP_CODE}`,
+            {
+                headers: {
+                    'Accept': 'application/json',
+                    'User-Agent': 'BusDisplay/1.0'
+                }
+            }
+        );
+        
+        const data = await response.json();
+        res.json(data);
+        
+    } catch (error) {
+        res.json({ error: error.message });
     }
 });
 
@@ -79,4 +126,5 @@ app.get('/', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚌 Bus Display server running on port ${PORT}`);
     console.log(`📍 Monitoring stop ${STOP_CODE} for line ${LINE_NUMBER}`);
+    console.log(`🔗 Using curlbus.app API for real-time data`);
 });
