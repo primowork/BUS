@@ -7,86 +7,69 @@ const PORT = process.env.PORT || 8080;
 
 // הגדרות
 const STOP_CODE = 21831;
-const LINE_NUMBER = '547';  // line_ref לקו 2 של דן (מתאים לתחנה 21831)
+const LINE_NUMBER = '2';
+const CURLBUS_BASE = 'https://curlbus.app';  // hosted ציבורי!
 
 // Serve static files
 app.use(express.static(__dirname));
 
-// API endpoint לזמני הגעה - SIRI רשמי
+// API endpoint – שליפה מ-curlbus.app
 app.get('/api/arrivals', async (req, res) => {
     try {
-        const now = new Date();
+        const now = new Date().getTime() / 1000;  // timestamp בשניות
 
-        // שלב 1: מצא את קוד התחנה המדויק (MonitoringRef) ב-SIRI
-        const stopResponse = await fetch(
-            'https://gtfs.mot.gov.il/rtis-siri/stopMonitoring?MonitoringRef=IL:1:1:21831&MaximumStopVisits=50&MaximumNumberOfCalls=10&Language=he'
-        );
+        // שליפה מתחנה 21831 (סנן לקו 2)
+        const response = await fetch(`${CURLBUS_BASE}/${STOP_CODE}`, {
+            headers: { 'Accept': 'application/json' }
+        });
 
-        if (!stopResponse.ok) {
-            throw new Error(`Stop API returned ${stopResponse.status}`);
+        if (!response.ok) {
+            throw new Error(`Curlbus returned ${response.status}`);
         }
 
-        const stopData = await stopResponse.xml();  // SIRI מחזיר XML
-        const parser = new DOMParser();  // צריך xml2js או libxmljs – נוסיף
-        const parsedStop = parser.parseFromString(stopData, 'text/xml');
-
-        // שלב 2: חפש הגעות לקו LINE_NUMBER
-        const arrivalsResponse = await fetch(
-            `https://gtfs.mot.gov.il/rtis-siri/estimatedTimetable?LineRef=${LINE_NUMBER}&MonitoringRef=IL:1:1:${STOP_CODE}&MaximumStopVisits=5&Language=he`
-        );
-
-        if (!arrivalsResponse.ok) {
-            throw new Error(`Arrivals API returned ${arrivalsResponse.status}`);
-        }
-
-        const arrivalsData = await arrivalsResponse.xml();
-        const parsedArrivals = parser.parseFromString(arrivalsData, 'text/xml');
-
+        const data = await response.json();
         const arrivals = [];
 
-        // פרסינג פשוט של XML (דוגמה – התאם לשדות)
-        const calls = parsedArrivals.getElementsByTagName('Call');
-        for (let call of calls) {
-            const expectedTime = call.getElementsByTagName('ExpectedDepartureTime')[0]?.textContent;
-            if (expectedTime) {
-                const arrivalTime = new Date(expectedTime);
-                const diffMinutes = Math.round((arrivalTime - now) / 60000);
-                if (diffMinutes >= -5 && diffMinutes < 120) {
-                    arrivals.push(Math.max(0, diffMinutes));
-                }
-            }
+        // סנן לקו 2 וחשב דקות מ-ETA
+        if (data.arrivals && Array.isArray(data.arrivals)) {
+            data.arrivals
+                .filter(item => item.route === LINE_NUMBER)
+                .forEach(item => {
+                    const etaTimestamp = item.estimated_arrival;  // timestamp בשניות
+                    if (etaTimestamp) {
+                        const diffMinutes = Math.round((etaTimestamp - now) / 60);  // חישוב דקות
+                        if (diffMinutes >= -2 && diffMinutes < 120) {
+                            arrivals.push(Math.max(0, diffMinutes));
+                        }
+                    }
+                });
         }
 
         arrivals.sort((a, b) => a - b);
         const topArrivals = [...new Set(arrivals)].slice(0, 3);
 
-        console.log(`📍 Stop ${STOP_CODE}: Found ${topArrivals.length} arrivals for line 2:`, topArrivals);
+        console.log(`📍 Stop ${STOP_CODE}: Found ${topArrivals.length} arrivals for line ${LINE_NUMBER}:`, topArrivals);
 
         res.json({
             success: topArrivals.length > 0,
             stopCode: STOP_CODE,
-            lineNumber: '2',
+            lineNumber: LINE_NUMBER,
             arrivals: topArrivals,
-            timestamp: now.toISOString(),
-            source: 'mot_siri'
+            timestamp: new Date().toISOString(),
+            source: 'curlbus_public'
         });
 
     } catch (error) {
-        console.error('Error fetching arrivals:', error.message);
+        console.error('Curlbus error:', error.message);
 
-        // Fallback ל-GTFS סטטי (מתוכנן)
+        // Fallback ל-Stride (הקוד הישן שלך – העתק את הלולאה מ-server.js הקודם)
         try {
-            const fallback = await getFallbackArrivals();
-            res.json({
-                success: fallback.length > 0,
-                arrivals: fallback,
-                timestamp: new Date().toISOString(),
-                source: 'gtfs_fallback'
-            });
+            // ... (קוד Stride כאן – כמו בהודעה קודמת)
+            res.json({ /* נתונים מ-Stride */ });
         } catch (fallbackError) {
             res.json({
                 success: false,
-                error: error.message,
+                error: 'No data available',
                 arrivals: [],
                 timestamp: new Date().toISOString()
             });
@@ -94,32 +77,16 @@ app.get('/api/arrivals', async (req, res) => {
     }
 });
 
-// Fallback GTFS
-async function getFallbackArrivals() {
-    try {
-        const now = new Date();
-        // GTFS רשמי - הורד קובץ stop_times.txt או השתמש ב-query אם זמין
-        // לעת עתה, דוגמה סטטית – התאם לנתונים אמיתיים
-        // בפועל, הורד GTFS מ- https://gtfs.mot.gov.il/gtfs_israel.zip והשתמש ב-csv-parser
-        const arrivals = [15, 30, 45];  // דוגמה – החלף בפרסינג אמיתי
-        return arrivals.slice(0, 3);
-    } catch (e) {
-        return [];
-    }
-}
-
-// בדיקת בריאות
+// Health check + דף ראשי
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', stopCode: STOP_CODE, lineNumber: '2' });
+    res.json({ status: 'ok', stopCode: STOP_CODE, lineNumber: LINE_NUMBER });
 });
 
-// דף ראשי
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// הפעלת השרת
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚌 Bus Display server running on port ${PORT}`);
-    console.log(`📍 Monitoring stop ${STOP_CODE} for line 2 (MoT SIRI)`);
+    console.log(`🚌 Bus Display server running on port ${PORT} with curlbus public API`);
+    console.log(`📍 Monitoring stop ${STOP_CODE} for line ${LINE_NUMBER}`);
 });
