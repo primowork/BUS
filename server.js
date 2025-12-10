@@ -2,27 +2,26 @@ const express = require('express');
 const fetch = require('node-fetch');
 const path = require('path');
 
-const app = express();  // <-- זה החלק שהיה חסר לך!
+const app = express();
 const PORT = process.env.PORT || 8080;
 
 // הגדרות
 const STOP_CODE = 21831;
-const LINE_REF = 547;  // קו 2 של אגד - line_ref האמיתי הוא 547
 
-// Serve static files (כדי שה-index.html ייטען)
+// Serve static files from the current directory (for index.html)
 app.use(express.static(__dirname));
 
-// API endpoint לזמני הגעה
+// API endpoint for bus arrivals
 app.get('/api/arrivals', async (req, res) => {
     try {
         const now = new Date();
 
-        // שימוש באנדפוינט המומלץ עם ETA אמיתי
+        // Use the recommended endpoint without line_ref to avoid 500 error
+        // This fetches all routes at the stop, and we'll filter for line 2 if needed
         const response = await fetch(
             `https://open-bus-stride-api.hasadna.org.il/route_timetable/list?` +
             `stop_code=${STOP_CODE}&` +
-            `line_ref=${LINE_REF}&` +
-            `limit=15`
+            `limit=20`  // More results to ensure we catch line 2
         );
 
         if (!response.ok) {
@@ -35,13 +34,18 @@ app.get('/api/arrivals', async (req, res) => {
         console.log(`Got ${data.length} results from route_timetable`);
 
         for (const item of data) {
+            // Filter only for line 2 (line_ref or route short name)
+            if (item.route_short_name !== '2' && item.siri_route__line_ref !== 3232 && item.siri_route__line_ref !== 547) {
+                continue;  // Skip non-line 2
+            }
+
             let arrivalTime;
 
-            // עדיפות ל-ETA אמיתי (זמן אמת)
+            // Priority to real ETA
             if (item.eta) {
                 arrivalTime = new Date(item.eta);
             } else if (item.arrival_time) {
-                // fallback לזמן מתוכנן
+                // Fallback to scheduled time
                 const [h, m, s] = item.arrival_time.split(':').map(Number);
                 arrivalTime = new Date();
                 arrivalTime.setHours(h, m, s || 0, 0);
@@ -72,6 +76,8 @@ app.get('/api/arrivals', async (req, res) => {
 
     } catch (error) {
         console.error('Error fetching arrivals:', error.message);
+
+        // Simple fallback response
         res.json({
             success: false,
             error: error.message,
@@ -81,18 +87,18 @@ app.get('/api/arrivals', async (req, res) => {
     }
 });
 
-// בדיקת בריאות
+// Health check endpoint
 app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', stopCode: STOP_CODE, lineNumber: '2' });
 });
 
-// דף ראשי
+// Serve the main page
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// הפעלת השרת
+// Start the server
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚌 Bus Display server running on port ${PORT}`);
-    console.log(`📍 Monitoring stop ${STOP_CODE} for line 2 (line_ref ${LINE_REF})`);
+    console.log(`📍 Monitoring stop ${STOP_CODE} for line 2`);
 });
