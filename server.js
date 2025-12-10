@@ -22,8 +22,7 @@ app.get('/api/arrivals', async (req, res) => {
                 headers: {
                     'Accept': 'application/json',
                     'User-Agent': 'BusDisplay/1.0'
-                },
-                timeout: 10000
+                }
             }
         );
         
@@ -32,35 +31,76 @@ app.get('/api/arrivals', async (req, res) => {
         }
         
         const data = await response.json();
-        
-        // מסנן רק את קו 2 ומחשב דקות להגעה
         const arrivals = [];
         
-        // curlbus מחזיר את הנתונים בפורמט שונה
-        // בדיקה של המבנה שמוחזר
+        console.log('Raw curlbus response keys:', Object.keys(data));
+        
+        // curlbus יכול להחזיר את הנתונים בכמה מבנים שונים
+        // ננסה למצוא את הנתונים
+        
+        let visits = [];
+        
+        // אפשרות 1: data.visits[stopCode]
         if (data.visits) {
-            // visits הוא אובייקט עם מפתחות של קודי תחנות
-            const stopVisits = data.visits[STOP_CODE] || data.visits[String(STOP_CODE)] || [];
+            visits = data.visits[STOP_CODE] || data.visits[String(STOP_CODE)] || [];
+        }
+        
+        // אפשרות 2: data ישירות הוא מערך
+        if (Array.isArray(data)) {
+            visits = data;
+        }
+        
+        // אפשרות 3: data.arrivals
+        if (data.arrivals) {
+            visits = data.arrivals;
+        }
+        
+        // אפשרות 4: data.stop והנתונים בתוכו
+        if (data.stop && data.stop.visits) {
+            visits = data.stop.visits;
+        }
+        
+        console.log(`Found ${visits.length} total visits`);
+        
+        for (const visit of visits) {
+            // בדיקת שם הקו - curlbus משתמש בשדות שונים
+            const lineNum = String(visit.line_name || visit.route_short_name || visit.line || visit.route || '');
             
-            for (const visit of stopVisits) {
-                // בודק אם זה הקו שאנחנו רוצים
-                const lineName = visit.line_name || visit.route_short_name || visit.line_ref || '';
+            console.log(`Checking line: "${lineNum}" vs "${LINE_NUMBER}"`);
+            
+            // בודק התאמה (קו 2 יכול להיות "2" או 2)
+            if (lineNum === LINE_NUMBER || lineNum === `קו ${LINE_NUMBER}` || String(lineNum).trim() === LINE_NUMBER) {
                 
-                if (lineName === LINE_NUMBER || lineName === `קו ${LINE_NUMBER}`) {
-                    // curlbus מחזיר eta בשניות
-                    let minutes = null;
-                    
-                    if (visit.eta !== undefined && visit.eta !== null) {
-                        minutes = Math.round(visit.eta / 60);
-                    } else if (visit.minutes !== undefined) {
-                        minutes = visit.minutes;
-                    } else if (visit.static_eta !== undefined) {
-                        minutes = Math.round(visit.static_eta / 60);
+                // חישוב דקות - curlbus יכול להחזיר בכמה פורמטים
+                let minutes = null;
+                
+                // eta בשניות
+                if (typeof visit.eta === 'number') {
+                    minutes = Math.round(visit.eta / 60);
+                }
+                // eta כמחרוזת עם 'm' (כמו "10m")
+                else if (typeof visit.eta === 'string') {
+                    const match = visit.eta.match(/(\d+)/);
+                    if (match) {
+                        minutes = parseInt(match[1]);
                     }
-                    
-                    if (minutes !== null && minutes >= 0 && minutes < 120) {
-                        arrivals.push(minutes);
+                    if (visit.eta.toLowerCase() === 'now') {
+                        minutes = 0;
                     }
+                }
+                // minutes ישירות
+                else if (typeof visit.minutes === 'number') {
+                    minutes = visit.minutes;
+                }
+                // static_eta
+                else if (typeof visit.static_eta === 'number') {
+                    minutes = Math.round(visit.static_eta / 60);
+                }
+                
+                console.log(`Line ${lineNum}: ${minutes} minutes`);
+                
+                if (minutes !== null && minutes >= 0 && minutes < 120) {
+                    arrivals.push(minutes);
                 }
             }
         }
@@ -69,10 +109,10 @@ app.get('/api/arrivals', async (req, res) => {
         arrivals.sort((a, b) => a - b);
         const topArrivals = arrivals.slice(0, 3);
         
-        console.log(`📍 Stop ${STOP_CODE}: Found ${topArrivals.length} arrivals for line ${LINE_NUMBER}`);
+        console.log(`📍 Stop ${STOP_CODE}: Found ${topArrivals.length} arrivals for line ${LINE_NUMBER}:`, topArrivals);
         
         res.json({
-            success: true,
+            success: topArrivals.length > 0,
             stopCode: STOP_CODE,
             lineNumber: LINE_NUMBER,
             arrivals: topArrivals,
@@ -92,7 +132,7 @@ app.get('/api/arrivals', async (req, res) => {
     }
 });
 
-// Debug endpoint - לראות את כל הנתונים מ-curlbus
+// Debug endpoint - לראות את כל הנתונים הגולמיים מ-curlbus
 app.get('/api/debug', async (req, res) => {
     try {
         const response = await fetch(
@@ -106,7 +146,12 @@ app.get('/api/debug', async (req, res) => {
         );
         
         const data = await response.json();
-        res.json(data);
+        res.json({
+            raw: data,
+            keys: Object.keys(data),
+            stopCode: STOP_CODE,
+            lineNumber: LINE_NUMBER
+        });
         
     } catch (error) {
         res.json({ error: error.message });
