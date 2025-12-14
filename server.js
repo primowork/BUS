@@ -5,19 +5,12 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// הגדרות
-const STOP_CODE = 21831;
-const LINE_NUMBER = '2';
-const CURLBUS_URL = `https://curlbus.app/${STOP_CODE}`;
-
-// MOT SIRI API (חלופי)
-const STRIDE_URL = 'https://open-bus-stride-api.hasadna.org.il/siri_vm_map/get';
-
-// Serve static files
-app.use(express.static(__dirname));
+// ברירות מחדל
+const DEFAULT_STOP = 21831;
+const DEFAULT_LINE = '2';
 
 // פונקציה לפרסינג הטקסט מ-curlbus
-function parseCurlbusText(text) {
+function parseCurlbusText(text, lineNumber) {
     const arrivals = [];
     const lines = text.split('\n');
     
@@ -26,8 +19,7 @@ function parseCurlbusText(text) {
             const columns = line.split('│').map(c => c.trim());
             
             for (let i = 0; i < columns.length; i++) {
-                if (columns[i] === LINE_NUMBER || columns[i] === `${LINE_NUMBER}`) {
-                    // מחפשים את עמודת הזמנים
+                if (columns[i] === lineNumber || columns[i] === ` ${lineNumber} `) {
                     for (let j = columns.length - 1; j >= 0; j--) {
                         const timesCol = columns[j];
                         if (timesCol && timesCol.length > 0) {
@@ -57,8 +49,10 @@ function parseCurlbusText(text) {
 }
 
 // ניסיון לשלוף מ-curlbus
-async function fetchFromCurlbus() {
-    const response = await fetch(CURLBUS_URL, {
+async function fetchFromCurlbus(stopCode, lineNumber) {
+    const url = `https://curlbus.app/${stopCode}`;
+    
+    const response = await fetch(url, {
         headers: {
             'User-Agent': 'curl/7.64.1',
             'Accept': 'text/plain'
@@ -70,94 +64,50 @@ async function fetchFromCurlbus() {
     }
 
     const text = await response.text();
-    console.log('Curlbus raw (first 500):', text.substring(0, 500));
+    console.log(`Curlbus for stop ${stopCode}, line ${lineNumber}:`);
+    console.log(text.substring(0, 500));
     
-    const arrivals = parseCurlbusText(text);
+    const arrivals = parseCurlbusText(text, lineNumber);
     
     if (arrivals.length > 0) {
-        return { arrivals, source: 'curlbus', raw: text.substring(0, 300) };
+        return { arrivals, source: 'curlbus' };
     }
     
     throw new Error('No arrivals found in curlbus response');
 }
 
-// שליפה מ-Stride API
-async function fetchFromStride() {
-    const response = await fetch(`${STRIDE_URL}?stop_code=${STOP_CODE}`, {
-        headers: { 'Accept': 'application/json' }
-    });
-    
-    if (!response.ok) {
-        throw new Error(`Stride returned ${response.status}`);
-    }
-    
-    const data = await response.json();
-    const arrivals = [];
-    const now = Date.now();
-    
-    if (data && Array.isArray(data)) {
-        data.forEach(bus => {
-            if (bus.line_short_name === LINE_NUMBER || bus.line_ref === LINE_NUMBER) {
-                if (bus.expected_arrival_time) {
-                    const arrivalTime = new Date(bus.expected_arrival_time).getTime();
-                    const minutesToArrival = Math.round((arrivalTime - now) / 60000);
-                    if (minutesToArrival >= 0 && minutesToArrival < 120) {
-                        arrivals.push(minutesToArrival);
-                    }
-                }
-            }
-        });
-    }
-    
-    arrivals.sort((a, b) => a - b);
-    return { arrivals: [...new Set(arrivals)].slice(0, 3), source: 'stride' };
-}
+// ===== API ROUTES FIRST =====
 
 // API endpoint ראשי
 app.get('/api/arrivals', async (req, res) => {
     const now = new Date();
     
-    // ניסיון 1: curlbus
+    const stopCode = parseInt(req.query.stop) || DEFAULT_STOP;
+    const lineNumber = req.query.line || DEFAULT_LINE;
+    
+    console.log(`📍 Request for stop ${stopCode}, line ${lineNumber}`);
+    
     try {
-        const curlbusResult = await fetchFromCurlbus();
+        const curlbusResult = await fetchFromCurlbus(stopCode, lineNumber);
         if (curlbusResult.arrivals.length > 0) {
-            console.log(`📍 Curlbus success:`, curlbusResult.arrivals);
+            console.log(`✅ Curlbus success:`, curlbusResult.arrivals);
             return res.json({
                 success: true,
-                stopCode: STOP_CODE,
-                lineNumber: LINE_NUMBER,
+                stopCode: stopCode,
+                lineNumber: lineNumber,
                 arrivals: curlbusResult.arrivals.slice(0, 3),
                 timestamp: now.toISOString(),
                 source: 'curlbus'
             });
         }
     } catch (e) {
-        console.log('Curlbus failed:', e.message);
+        console.log('❌ Curlbus failed:', e.message);
     }
     
-    // ניסיון 2: Stride API
-    try {
-        const strideResult = await fetchFromStride();
-        if (strideResult.arrivals.length > 0) {
-            console.log(`📍 Stride success:`, strideResult.arrivals);
-            return res.json({
-                success: true,
-                stopCode: STOP_CODE,
-                lineNumber: LINE_NUMBER,
-                arrivals: strideResult.arrivals.slice(0, 3),
-                timestamp: now.toISOString(),
-                source: 'stride'
-            });
-        }
-    } catch (e) {
-        console.log('Stride failed:', e.message);
-    }
-    
-    // אם שניהם נכשלו
     res.json({
         success: false,
-        stopCode: STOP_CODE,
-        lineNumber: LINE_NUMBER,
+        stopCode: stopCode,
+        lineNumber: lineNumber,
         arrivals: [],
         timestamp: now.toISOString(),
         source: 'none',
@@ -165,10 +115,11 @@ app.get('/api/arrivals', async (req, res) => {
     });
 });
 
-// Debug endpoints
-app.get('/api/debug/curlbus', async (req, res) => {
+// Debug endpoint
+app.get('/api/debug/curlbus/:stop', async (req, res) => {
     try {
-        const response = await fetch(CURLBUS_URL, {
+        const stopCode = req.params.stop;
+        const response = await fetch(`https://curlbus.app/${stopCode}`, {
             headers: { 'User-Agent': 'curl/7.64.1' }
         });
         const text = await response.text();
@@ -178,16 +129,21 @@ app.get('/api/debug/curlbus', async (req, res) => {
     }
 });
 
+// Health check
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', stopCode: STOP_CODE, lineNumber: LINE_NUMBER });
+    res.json({ status: 'ok' });
 });
 
+// ===== STATIC FILES AFTER API =====
+app.use(express.static(__dirname));
+
+// Fallback to index.html
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚌 Bus Display running on port ${PORT}`);
-    console.log(`📍 Stop ${STOP_CODE}, Line ${LINE_NUMBER}`);
-    console.log(`🔗 ${CURLBUS_URL}`);
+    console.log(`📍 Supports dynamic stop/line via query params`);
+    console.log(`   Example: /api/arrivals?stop=21831&line=2`);
 });
