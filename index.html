@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>קו 2 - זמני הגעה</title>
+    <title>זמני הגעה</title>
     <style>
         * {
             margin: 0;
@@ -45,11 +45,29 @@
             padding: 15px 30px;
             border-radius: 12px;
             min-width: 100px;
+            cursor: pointer;
+            transition: transform 0.2s, background-color 0.2s;
+            user-select: none;
+        }
+        
+        .line-number:hover {
+            transform: scale(1.05);
+            background-color: #1557b0;
+        }
+        
+        .line-number:active {
+            transform: scale(0.95);
         }
         
         .line-name {
             font-size: 24px;
             color: #aaa;
+        }
+
+        .stop-name {
+            font-size: 14px;
+            color: #666;
+            margin-top: 5px;
         }
         
         .arrival-main {
@@ -140,6 +158,12 @@
             padding: 5px 10px;
             border-radius: 5px;
         }
+
+        .switch-hint {
+            font-size: 12px;
+            color: #444;
+            margin-top: 10px;
+        }
         
         @keyframes pulse {
             0%, 100% { opacity: 1; }
@@ -173,8 +197,11 @@
     
     <div class="container">
         <div class="line-header">
-            <div class="line-number">2</div>
-            <div class="line-name">קו 2</div>
+            <div class="line-number" id="line-number" onclick="toggleLine()">2</div>
+            <div>
+                <div class="line-name" id="line-name">קו 2</div>
+                <div class="stop-name" id="stop-name">מטה מחוז הירקון/ראול ולנברג</div>
+            </div>
         </div>
         
         <div id="main-display">
@@ -199,6 +226,7 @@
             </div>
         </div>
 
+        <div class="switch-hint">לחץ על מספר הקו להחלפה</div>
         <div class="error-message" id="error-message"></div>
     </div>
     
@@ -207,7 +235,37 @@
     </div>
 
     <script>
-        const REFRESH_INTERVAL = 20000; // כל 20 שניות
+        const REFRESH_INTERVAL = 20000;
+        
+        // הגדרות הקווים
+        const LINES = {
+            line2: {
+                lineNumber: '2',
+                stopCode: 21831,
+                stopName: 'מטה מחוז הירקון/ראול ולנברג'
+            },
+            line189: {
+                lineNumber: '189',
+                stopCode: 21356,
+                stopName: 'ראול ולנברג/הנחושת'
+            }
+        };
+        
+        let currentLine = 'line2';
+        
+        function toggleLine() {
+            currentLine = currentLine === 'line2' ? 'line189' : 'line2';
+            updateLineDisplay();
+            fetchArrivals();
+        }
+        
+        function updateLineDisplay() {
+            const config = LINES[currentLine];
+            document.getElementById('line-number').textContent = config.lineNumber;
+            document.getElementById('line-name').textContent = `קו ${config.lineNumber}`;
+            document.getElementById('stop-name').textContent = config.stopName;
+            document.title = `קו ${config.lineNumber} - זמני הגעה`;
+        }
         
         function updateDisplay(data) {
             const mainMinutes = document.getElementById('main-minutes');
@@ -217,19 +275,12 @@
             const thirdArrival = document.getElementById('third-arrival');
             const lastUpdate = document.getElementById('last-update');
             const status = document.getElementById('status');
-            const sourceBadge = document.getElementById('source-badge');
             const errorMessage = document.getElementById('error-message');
 
             const arrivals = data.arrivals || [];
             
             status.className = 'status-indicator';
-            
-            // עדכון מקור המידע
-            if (data.source) {
-                sourceBadge.textContent = data.source;
-            }
 
-            // הצגת שגיאה אם יש
             if (data.error) {
                 errorMessage.textContent = data.error;
                 errorMessage.classList.add('show');
@@ -281,8 +332,10 @@
             const status = document.getElementById('status');
             status.className = 'status-indicator loading';
             
+            const config = LINES[currentLine];
+            
             try {
-                const response = await fetch('/api/arrivals');
+                const response = await fetch(`/api/arrivals?line=${config.lineNumber}&stop=${config.stopCode}`);
                 const data = await response.json();
                 
                 console.log('API Response:', data);
@@ -301,10 +354,11 @@
         }
         
         // התחלה
+        updateLineDisplay();
         fetchArrivals();
         setInterval(fetchArrivals, REFRESH_INTERVAL);
         
-        console.log('🚌 Bus Display - קו 2 - תחנה 21831');
+        console.log('🚌 Bus Display - Toggle between Line 2 and Line 189');
     </script>
 </body>
 </html>
